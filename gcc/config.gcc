@@ -967,6 +967,12 @@ case ${target} in
       ;;
   esac
   ;;
+*-*-liteos*)
+  gas=yes
+  gnu_ld=yes
+  default_use_cxa_atexit=yes
+  use_gcc_stdint=provide
+  ;;
 *-*-netbsd*)
   tm_p_file="${tm_p_file} netbsd-protos.h"
   tmake_file="t-netbsd t-slibgcc"
@@ -1971,6 +1977,12 @@ x86_64-*-openbsd*)
 	gas=yes
 	gnu_ld=yes
 	;;
+i[34567]86-*-liteos*)
+    tm_file="${tm_file} i386/unix.h i386/att.h dbxelf.h elfos.h glibc-stdint.h i386/i386elf.h liteos.h"
+    ;;
+x86_64-*-liteos*)
+    tm_file="${tm_file} i386/unix.h i386/att.h dbxelf.h elfos.h glibc-stdint.h i386/i386elf.h i386/x86-64.h liteos.h"
+    ;;
 i[34567]86-*-linux* | i[34567]86-*-kfreebsd*-gnu | i[34567]86-*-gnu* | i[34567]86-*-kopensolaris*-gnu)
 			# Intel 80386's running GNU/*
 			# with ELF format using glibc 2
