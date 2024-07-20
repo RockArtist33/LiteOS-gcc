@@ -133,7 +133,7 @@ gimple_range_op_handler::gimple_range_op_handler (gimple *s)
 	  m_op1 = gimple_cond_lhs (m_stmt);
 	  m_op2 = gimple_cond_rhs (m_stmt);
 	  // Check that operands are supported types.  One check is enough.
-	  if (Value_Range::supports_type_p (TREE_TYPE (m_op1)))
+	  if (value_range::supports_type_p (TREE_TYPE (m_op1)))
 	    m_operator = oper.range_op ();
 	  gcc_checking_assert (m_operator);
 	  return;
@@ -153,7 +153,7 @@ gimple_range_op_handler::gimple_range_op_handler (gimple *s)
 	  if (gimple_num_ops (m_stmt) >= 3)
 	    m_op2 = gimple_assign_rhs2 (m_stmt);
 	  // Check that operands are supported types.  One check is enough.
-	  if ((m_op1 && !Value_Range::supports_type_p (TREE_TYPE (m_op1))))
+	  if ((m_op1 && !value_range::supports_type_p (TREE_TYPE (m_op1))))
 	    return;
 	  m_operator = oper.range_op ();
 	  gcc_checking_assert (m_operator);
@@ -178,7 +178,6 @@ gimple_range_op_handler::gimple_range_op_handler (gimple *s)
 bool
 gimple_range_op_handler::calc_op1 (vrange &r, const vrange &lhs_range)
 {
-  gcc_checking_assert (gimple_num_ops (m_stmt) < 3);
   // Give up on empty ranges.
   if (lhs_range.undefined_p ())
     return false;
@@ -186,7 +185,7 @@ gimple_range_op_handler::calc_op1 (vrange &r, const vrange &lhs_range)
   // Unary operations require the type of the first operand in the
   // second range position.
   tree type = TREE_TYPE (operand1 ());
-  Value_Range type_range (type);
+  value_range type_range (type);
   type_range.set_varying (type);
   return op1_range (r, type, lhs_range, type_range);
 }
@@ -219,7 +218,7 @@ gimple_range_op_handler::calc_op1 (vrange &r, const vrange &lhs_range,
 	op2_type = TREE_TYPE (operand2 ());
       else
 	op2_type = TREE_TYPE (operand1 ());
-      Value_Range trange (op2_type);
+      value_range trange (op2_type);
       trange.set_varying (op2_type);
       return op1_range (r, type, lhs_range, trange, k);
     }
@@ -244,7 +243,7 @@ gimple_range_op_handler::calc_op2 (vrange &r, const vrange &lhs_range,
   if (op1_range.undefined_p ())
     {
       tree op1_type = TREE_TYPE (operand1 ());
-      Value_Range trange (op1_type);
+      value_range trange (op1_type);
       trange.set_varying (op1_type);
       return op2_range (r, type, lhs_range, trange, k);
     }
@@ -312,8 +311,20 @@ public:
     r = lh;
     return true;
   }
+  virtual bool fold_range (prange &r, tree, const prange &lh,
+			   const prange &, relation_trio) const
+  {
+    r = lh;
+    return true;
+  }
   virtual bool op1_range (irange &r, tree, const irange &lhs,
 			  const irange &, relation_trio) const
+  {
+    r = lhs;
+    return true;
+  }
+  virtual bool op1_range (prange &r, tree, const prange &lhs,
+			  const prange &, relation_trio) const
   {
     r = lhs;
     return true;
@@ -853,7 +864,7 @@ public:
     // __builtin_ffs* and __builtin_popcount* return [0, prec].
     int prec = TYPE_PRECISION (lh.type ());
     // If arg is non-zero, then ffs or popcount are non-zero.
-    int mini = range_includes_zero_p (&lh) ? 0 : 1;
+    int mini = range_includes_zero_p (lh) ? 0 : 1;
     int maxi = prec;
 
     // If some high bits are known to be zero, decrease the maximum.
@@ -930,8 +941,10 @@ cfn_clz::fold_range (irange &r, tree type, const irange &lh,
   int maxi = prec - 1;
   if (m_gimple_call_internal_p)
     {
-      // Only handle the single common value.
-      if (rh.lower_bound () == prec)
+      // Handle only the two common values.
+      if (rh.lower_bound () == -1)
+	mini = -1;
+      else if (rh.lower_bound () == prec)
 	maxi = prec;
       else
 	// Magic value to give up, unless we can prove arg is non-zero.
@@ -942,10 +955,10 @@ cfn_clz::fold_range (irange &r, tree type, const irange &lh,
   if (wi::gt_p (lh.lower_bound (), 0, TYPE_SIGN (lh.type ())))
     {
       maxi = prec - 1 - wi::floor_log2 (lh.lower_bound ());
-      if (mini == -2)
+      if (mini < 0)
 	mini = 0;
     }
-  else if (!range_includes_zero_p (&lh))
+  else if (!range_includes_zero_p (lh))
     {
       mini = 0;
       maxi = prec - 1;
@@ -958,11 +971,11 @@ cfn_clz::fold_range (irange &r, tree type, const irange &lh,
   if (max == 0)
     {
       // If CLZ_DEFINED_VALUE_AT_ZERO is 2 with VALUE of prec,
-      // return [prec, prec], otherwise ignore the range.
-      if (maxi == prec)
-	mini = prec;
+      // return [prec, prec] or [-1, -1], otherwise ignore the range.
+      if (maxi == prec || mini == -1)
+	mini = maxi;
     }
-  else
+  else if (mini >= 0)
     mini = newmini;
 
   if (mini == -2)
@@ -1007,7 +1020,7 @@ cfn_ctz::fold_range (irange &r, tree type, const irange &lh,
 	mini = -2;
     }
   // If arg is non-zero, then use [0, prec - 1].
-  if (!range_includes_zero_p (&lh))
+  if (!range_includes_zero_p (lh))
     {
       mini = 0;
       maxi = prec - 1;
@@ -1096,7 +1109,7 @@ class cfn_strlen : public range_operator
 {
 public:
   using range_operator::fold_range;
-  virtual bool fold_range (irange &r, tree type, const irange &,
+  virtual bool fold_range (irange &r, tree type, const prange &,
 			   const irange &, relation_trio) const
   {
     wide_int max = irange_val_max (ptrdiff_type_node);
@@ -1213,8 +1226,9 @@ gimple_range_op_handler::maybe_builtin_call ()
   if (func == CFN_LAST)
     return;
   tree type = gimple_range_type (call);
-  gcc_checking_assert (type);
-  if (!Value_Range::supports_type_p (type))
+  if (!type)
+    return;
+  if (!value_range::supports_type_p (type))
     return;
 
   switch (func)

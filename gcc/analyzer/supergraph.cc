@@ -364,6 +364,7 @@ supergraph::dump_dot_to_pp (pretty_printer *pp,
     FOR_EACH_FUNCTION_WITH_GIMPLE_BODY (node)
     {
       function *fun = node->get_fun ();
+      gcc_assert (fun);
       const char *funcname = function_name (fun);
       gv.println ("subgraph \"cluster_%s\" {",
 		  funcname);
@@ -409,9 +410,9 @@ supergraph::dump_dot_to_pp (pretty_printer *pp,
 
       /* Add an invisible edge from ENTRY to EXIT, to improve the graph layout.  */
       pp_string (pp, "\t");
-      get_node_for_function_entry (fun)->dump_dot_id (pp);
+      get_node_for_function_entry (*fun)->dump_dot_id (pp);
       pp_string (pp, ":s -> ");
-      get_node_for_function_exit (fun)->dump_dot_id (pp);
+      get_node_for_function_exit (*fun)->dump_dot_id (pp);
       pp_string (pp, ":n [style=\"invis\",constraint=true];\n");
 
       /* Terminate per-function "subgraph" */
@@ -442,7 +443,7 @@ supergraph::dump_dot_to_file (FILE *fp, const dump_args_t &dump_args) const
      trying to prettify things by showing the underlying var.  */
   pp_format_decoder (pp) = default_tree_printer;
 
-  pp->buffer->stream = fp;
+  pp->set_output_stream (fp);
   dump_dot_to_pp (pp, dump_args);
   pp_flush (pp);
   delete pp;
@@ -901,7 +902,7 @@ superedge::dump () const
   pretty_printer pp;
   pp_format_decoder (&pp) = default_tree_printer;
   pp_show_color (&pp) = pp_show_color (global_dc->printer);
-  pp.buffer->stream = stderr;
+  pp.set_output_stream (stderr);
   dump (&pp);
   pp_newline (&pp);
   pp_flush (&pp);

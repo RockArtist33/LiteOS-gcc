@@ -3377,7 +3377,7 @@ optimize_range_tests_to_bit_test (enum tree_code opcode, int first, int length,
 	 case, if we would need otherwise 2 or more comparisons, then use
 	 the bit test; in the other cases, the threshold is 3 comparisons.  */
       bool entry_test_needed;
-      value_range r;
+      int_range_max r;
       if (TREE_CODE (exp) == SSA_NAME
 	  && get_range_query (cfun)->range_of_expr (r, exp)
 	  && !r.undefined_p ()
@@ -3418,7 +3418,8 @@ optimize_range_tests_to_bit_test (enum tree_code opcode, int first, int length,
 	     We can avoid then subtraction of the minimum value, but the
 	     mask constant could be perhaps more expensive.  */
 	  if (compare_tree_int (lowi, 0) > 0
-	      && compare_tree_int (high, prec) < 0)
+	      && compare_tree_int (high, prec) < 0
+	      && (entry_test_needed || wi::ltu_p (r.upper_bound (), prec)))
 	    {
 	      int cost_diff;
 	      HOST_WIDE_INT m = tree_to_uhwi (lowi);
@@ -6413,10 +6414,17 @@ compare_repeat_factors (const void *x1, const void *x2)
   const repeat_factor *rf1 = (const repeat_factor *) x1;
   const repeat_factor *rf2 = (const repeat_factor *) x2;
 
-  if (rf1->count != rf2->count)
-    return rf1->count - rf2->count;
+  if (rf1->count < rf2->count)
+    return -1;
+  else if (rf1->count > rf2->count)
+    return 1;
 
-  return rf2->rank - rf1->rank;
+  if (rf1->rank < rf2->rank)
+    return 1;
+  else if (rf1->rank > rf2->rank)
+    return -1;
+
+  return 0;
 }
 
 /* Look for repeated operands in OPS in the multiply tree rooted at

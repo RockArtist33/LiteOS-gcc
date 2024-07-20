@@ -20,15 +20,16 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "config.h"
 #define INCLUDE_MEMORY
+#define INCLUDE_VECTOR
 #include "system.h"
 #include "coretypes.h"
 #include "tree.h"
 #include "input.h"
+#include "diagnostic-core.h"
 #include "pretty-print.h"
 #include "gcc-rich-location.h"
 #include "gimple-pretty-print.h"
 #include "function.h"
-#include "diagnostic-core.h"
 #include "diagnostic-event-id.h"
 #include "diagnostic-path.h"
 #include "bitmap.h"
@@ -678,12 +679,12 @@ saved_diagnostic::saved_diagnostic (const state_machine *sm,
   m_stmt (ploc.m_stmt),
   /* stmt_finder could be on-stack; we want our own copy that can
      outlive that.  */
-  m_stmt_finder (ploc.m_finder ? ploc.m_finder->clone () : NULL),
+  m_stmt_finder (ploc.m_finder ? ploc.m_finder->clone () : nullptr),
   m_loc (ploc.m_loc),
   m_var (var), m_sval (sval), m_state (state),
-  m_d (std::move (d)), m_trailing_eedge (NULL),
+  m_d (std::move (d)), m_trailing_eedge (nullptr),
   m_idx (idx),
-  m_best_epath (NULL), m_problem (NULL),
+  m_best_epath (nullptr), m_problem (nullptr),
   m_notes ()
 {
   /* We must have an enode in order to be able to look for paths
@@ -1587,8 +1588,17 @@ diagnostic_manager::emit_saved_diagnostic (const exploded_graph &eg,
      We use the final enode from the epath, which might be different from
      the sd.m_enode, as the dedupe code doesn't care about enodes, just
      snodes.  */
-  sd.m_d->add_final_event (sd.m_sm, epath->get_final_enode (), sd.m_stmt,
-			   sd.m_var, sd.m_state, &emission_path);
+  {
+    const exploded_node *const enode = epath->get_final_enode ();
+    const gimple *stmt = sd.m_stmt;
+    event_loc_info loc_info (get_stmt_location (stmt, enode->get_function ()),
+			     enode->get_function ()->decl,
+			     enode->get_stack_depth ());
+    if (sd.m_stmt_finder)
+      sd.m_stmt_finder->update_event_loc_info (loc_info);
+    sd.m_d->add_final_event (sd.m_sm, enode, loc_info,
+			     sd.m_var, sd.m_state, &emission_path);
+  }
 
   /* The "final" event might not be final; if the saved_diagnostic has a
      trailing eedge stashed, add any events for it.  This is for use
@@ -1790,10 +1800,10 @@ public:
 					stmt,
 					stack_depth,
 					sm,
-					NULL,
+					nullptr,
 					src_sm_val,
 					dst_sm_val,
-					NULL,
+					nullptr,
 					dst_state,
 					src_node));
     return false;
@@ -1983,9 +1993,9 @@ struct null_assignment_sm_context : public sm_context
 					m_sm,
 					var_new_sval,
 					from, to,
-					NULL,
+					nullptr,
 					*m_new_state,
-					NULL));
+					nullptr));
   }
 
   void set_next_state (const gimple *stmt,
@@ -2009,9 +2019,9 @@ struct null_assignment_sm_context : public sm_context
 					m_sm,
 					sval,
 					from, to,
-					NULL,
+					nullptr,
 					*m_new_state,
-					NULL));
+					nullptr));
   }
 
   void warn (const supernode *, const gimple *,
@@ -2229,7 +2239,7 @@ diagnostic_manager::add_events_for_eedge (const path_builder &pb,
 							    &iter_point,
 							    emission_path,
 							    pb.get_ext_state ());
-			sm.on_stmt (&sm_ctxt, dst_point.get_supernode (), stmt);
+			sm.on_stmt (sm_ctxt, dst_point.get_supernode (), stmt);
 			// TODO: what about phi nodes?
 		      }
 		  }

@@ -165,16 +165,22 @@ public:
 
   // If CHANGE doesn't already clobber REGNO, try to add such a clobber,
   // limiting the movement range in order to make the clobber valid.
-  // When determining whether REGNO is live, ignore accesses made by an
-  // instruction I if IGNORE (I) is true.  The caller then assumes the
-  // responsibility of ensuring that CHANGE and I are placed in a valid order.
+  // Use IGNORE to guide this process, where IGNORE is an object that
+  // provides the same interface as ignore_nothing.
+  //
+  // That is, when determining whether REGNO is live, ignore accesses made
+  // by an instruction I if IGNORE says that I should be ignored.  The caller
+  // then assumes the responsibility of ensuring that CHANGE and I are placed
+  // in a valid order.  Similarly, ignore live ranges associated with a
+  // definition of REGNO if IGNORE says that that definition should be
+  // ignored.
   //
   // Return true on success.  Leave CHANGE unmodified when returning false.
   //
   // WATERMARK is a watermark returned by new_change_attempt ().
-  template<typename IgnorePredicate>
+  template<typename IgnorePredicates>
   bool add_regno_clobber (obstack_watermark &watermark, insn_change &change,
-			  unsigned int regno, IgnorePredicate ignore);
+			  unsigned int regno, IgnorePredicates ignore);
 
   // Return true if change_insns will be able to perform the changes
   // described by CHANGES.
@@ -268,6 +274,7 @@ private:
   insn_info::order_node *need_order_node (insn_info *);
 
   void add_insn_after (insn_info *, insn_info *);
+  void replace_nondebug_insn (insn_info *, insn_info *);
   void append_insn (insn_info *);
   void remove_insn (insn_info *);
 

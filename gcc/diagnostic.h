@@ -194,6 +194,7 @@ namespace json { class value; }
 class diagnostic_client_data_hooks;
 class logical_location;
 class diagnostic_diagram;
+class diagnostic_source_effect_info;
 
 /* Abstract base class for a particular output format for diagnostics;
    each value of -fdiagnostics-output-format= will have its own
@@ -210,6 +211,7 @@ public:
   virtual void on_end_diagnostic (const diagnostic_info &,
 				  diagnostic_t orig_diag_kind) = 0;
   virtual void on_diagram (const diagnostic_diagram &diagram) = 0;
+  virtual bool machine_readable_stderr_p () const = 0;
 
 protected:
   diagnostic_output_format (diagnostic_context &context)
@@ -238,6 +240,10 @@ public:
   void on_end_diagnostic (const diagnostic_info &,
 			  diagnostic_t orig_diag_kind) override;
   void on_diagram (const diagnostic_diagram &diagram) override;
+  bool machine_readable_stderr_p () const final override
+  {
+    return false;
+  }
 };
 
 /* A stack of sets of classifications: each entry in the stack is
@@ -355,6 +361,11 @@ struct diagnostic_source_printing_options
   /* Usable by plugins; if true, print a debugging ruler above the
      source output.  */
   bool show_ruler_p;
+
+  /* When printing events in an inline path, should we print lines
+     visualizing links between related events (e.g. for CFG paths)?
+     Corresponds to -fdiagnostics-show-event-links.  */
+  bool show_event_links_p;
 };
 
 /* This data structure bundles altogether any information relevant to
@@ -428,9 +439,15 @@ public:
 
   void maybe_show_locus (const rich_location &richloc,
 			 diagnostic_t diagnostic_kind,
-			 pretty_printer *pp);
+			 pretty_printer *pp,
+			 diagnostic_source_effect_info *effect_info);
 
   void emit_diagram (const diagnostic_diagram &diagram);
+
+  const diagnostic_output_format *get_output_format () const
+  {
+    return m_output_format;
+  }
 
   /* Various setters for use by option-handling logic.  */
   void set_output_format (diagnostic_output_format *output_format);
@@ -449,6 +466,10 @@ public:
   }
   void set_show_cwe (bool val) { m_show_cwe = val;  }
   void set_show_rules (bool val) { m_show_rules = val; }
+  void set_show_highlight_colors (bool val)
+  {
+    pp_show_highlight_colors (printer) = val;
+  }
   void set_path_format (enum diagnostic_path_format val)
   {
     m_path_format = val;
@@ -545,6 +566,14 @@ public:
 
   label_text get_location_text (const expanded_location &s) const;
 
+  bool diagnostic_impl (rich_location *, const diagnostic_metadata *,
+			int, const char *,
+			va_list *, diagnostic_t) ATTRIBUTE_GCC_DIAG(5,0);
+  bool diagnostic_n_impl (rich_location *, const diagnostic_metadata *,
+			  int, unsigned HOST_WIDE_INT,
+			  const char *, const char *, va_list *,
+			  diagnostic_t) ATTRIBUTE_GCC_DIAG(7,0);
+
 private:
   bool includes_seen_p (const line_map_ordinary *map);
 
@@ -563,7 +592,10 @@ private:
 
   void show_locus (const rich_location &richloc,
 		   diagnostic_t diagnostic_kind,
-		   pretty_printer *pp);
+		   pretty_printer *pp,
+		   diagnostic_source_effect_info *effect_info);
+
+  void print_path (const diagnostic_path &path);
 
   /* Data members.
      Ideally, all of these would be private and have "m_" prefixes.  */
@@ -694,10 +726,6 @@ private:
   urlifier *m_urlifier;
 
 public:
-  void (*m_print_path) (diagnostic_context *, const diagnostic_path *);
-  json::value *(*m_make_json_for_path) (diagnostic_context *,
-					const diagnostic_path *);
-
   /* Auxiliary data for client.  */
   void *m_client_aux_data;
 
@@ -824,10 +852,10 @@ diagnostic_finalizer (diagnostic_context *context)
 #define diagnostic_info_auxiliary_data(DI) (DI)->x_data
 
 /* Same as pp_format_decoder.  Works on 'diagnostic_context *'.  */
-#define diagnostic_format_decoder(DC) ((DC)->printer->format_decoder)
+#define diagnostic_format_decoder(DC) pp_format_decoder ((DC)->printer)
 
-/* Same as output_prefixing_rule.  Works on 'diagnostic_context *'.  */
-#define diagnostic_prefixing_rule(DC) ((DC)->printer->wrapping.rule)
+/* Same as pp_prefixing_rule.  Works on 'diagnostic_context *'.  */
+#define diagnostic_prefixing_rule(DC) pp_prefixing_rule ((DC)->printer)
 
 /* Raise SIGABRT on any diagnostic of severity DK_ERROR or higher.  */
 inline void
@@ -910,10 +938,11 @@ inline void
 diagnostic_show_locus (diagnostic_context *context,
 		       rich_location *richloc,
 		       diagnostic_t diagnostic_kind,
-		       pretty_printer *pp = nullptr)
+		       pretty_printer *pp = nullptr,
+		       diagnostic_source_effect_info *effect_info = nullptr)
 {
   gcc_assert (richloc);
-  context->maybe_show_locus (*richloc, diagnostic_kind, pp);
+  context->maybe_show_locus (*richloc, diagnostic_kind, pp, effect_info);
 }
 
 /* Because we read source files a second time after the frontend did it the
@@ -1063,6 +1092,7 @@ extern char *file_name_as_prefix (diagnostic_context *, const char *);
 extern char *build_message_string (const char *, ...) ATTRIBUTE_PRINTF_1;
 
 extern void diagnostic_output_format_init (diagnostic_context *,
+					   const char *main_input_filename_,
 					   const char *base_file_name,
 					   enum diagnostics_output_format,
 					   bool json_formatting);
@@ -1072,11 +1102,14 @@ extern void diagnostic_output_format_init_json_file (diagnostic_context *context
 						     bool formatted,
 						     const char *base_file_name);
 extern void diagnostic_output_format_init_sarif_stderr (diagnostic_context *context,
+							const char *main_input_filename_,
 							bool formatted);
 extern void diagnostic_output_format_init_sarif_file (diagnostic_context *context,
+						      const char *main_input_filename_,
 						      bool formatted,
 						      const char *base_file_name);
 extern void diagnostic_output_format_init_sarif_stream (diagnostic_context *context,
+							const char *main_input_filename_,
 							bool formatted,
 							FILE *stream);
 
@@ -1099,5 +1132,7 @@ option_unspecified_p (int opt)
 }
 
 extern char *get_cwe_url (int cwe);
+
+extern const char *get_diagnostic_kind_text (diagnostic_t kind);
 
 #endif /* ! GCC_DIAGNOSTIC_H */

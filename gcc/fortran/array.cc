@@ -1017,6 +1017,9 @@ gfc_compare_array_spec (gfc_array_spec *as1, gfc_array_spec *as2)
   if (as1->type != as2->type)
     return 0;
 
+  if (as1->cotype != as2->cotype)
+    return 0;
+
   if (as1->type == AS_EXPLICIT)
     for (i = 0; i < as1->rank + as1->corank; i++)
       {
@@ -2597,6 +2600,13 @@ gfc_array_dimen_size (gfc_expr *array, int dimen, mpz_t *result)
     case EXPR_FUNCTION:
       for (ref = array->ref; ref; ref = ref->next)
 	{
+	  /* Ultimate component is a procedure pointer.  */
+	  if (ref->type == REF_COMPONENT
+	      && !ref->next
+	      && ref->u.c.component->attr.function
+	      && IS_PROC_POINTER (ref->u.c.component))
+	    return false;
+
 	  if (ref->type != REF_ARRAY)
 	    continue;
 

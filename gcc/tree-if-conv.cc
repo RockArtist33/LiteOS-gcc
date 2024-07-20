@@ -936,12 +936,11 @@ ifcvt_memrefs_wont_trap (gimple *stmt, vec<data_reference_p> drs)
 
       /* an unconditionaly write won't trap if the base is written
          to unconditionally.  */
-      if (base_master_dr
-	  && DR_BASE_W_UNCONDITIONALLY (*base_master_dr))
-	return flag_store_data_races;
-      /* or the base is known to be not readonly.  */
-      else if (base_object_writable (DR_REF (a)))
-	return flag_store_data_races;
+      if ((base_master_dr
+	   && DR_BASE_W_UNCONDITIONALLY (*base_master_dr))
+	  /* or the base is known to be not readonly.  */
+	  || base_object_writable (DR_REF (a)))
+	return !ref_can_have_store_data_races (base);
     }
 
   return false;
@@ -3381,7 +3380,9 @@ ifcvt_local_dce (class loop *loop)
       gimple_stmt_iterator gsiprev = gsi;
       gsi_prev (&gsiprev);
       stmt = gsi_stmt (gsi);
-      if (gimple_store_p (stmt) && gimple_vdef (stmt))
+      if (!gimple_has_volatile_ops (stmt)
+	  && gimple_store_p (stmt)
+	  && gimple_vdef (stmt))
 	{
 	  tree lhs = gimple_get_lhs (stmt);
 	  ao_ref write;
@@ -3700,6 +3701,14 @@ bitfields_to_lower_p (class loop *loop,
 	    {
 	      if (dump_file && (dump_flags & TDF_DETAILS))
 		print_gimple_stmt (dump_file, stmt, 0, TDF_SLIM);
+
+	      if (TREE_THIS_VOLATILE (op))
+		{
+		  if (dump_file && (dump_flags & TDF_DETAILS))
+		    fprintf (dump_file, "\t Bitfield NO OK to lower,"
+					" the access is volatile.\n");
+		  return false;
+		}
 
 	      if (!INTEGRAL_TYPE_P (TREE_TYPE (op)))
 		{
@@ -4031,18 +4040,25 @@ pass_if_conversion::execute (function *fun)
   if (todo & TODO_update_ssa_any)
     update_ssa (todo & TODO_update_ssa_any);
 
-  /* If if-conversion elided the loop fall back to the original one.  */
+  /* If if-conversion elided the loop fall back to the original one.  Likewise
+     if the loops are not nested in the same outer loop.  */
   for (unsigned i = 0; i < preds.length (); ++i)
     {
       gimple *g = preds[i];
       if (!gimple_bb (g))
 	continue;
-      unsigned ifcvt_loop = tree_to_uhwi (gimple_call_arg (g, 0));
-      unsigned orig_loop = tree_to_uhwi (gimple_call_arg (g, 1));
-      if (!get_loop (fun, ifcvt_loop) || !get_loop (fun, orig_loop))
+      auto ifcvt_loop = get_loop (fun, tree_to_uhwi (gimple_call_arg (g, 0)));
+      auto orig_loop = get_loop (fun, tree_to_uhwi (gimple_call_arg (g, 1)));
+      if (!ifcvt_loop || !orig_loop)
 	{
 	  if (dump_file)
 	    fprintf (dump_file, "If-converted loop vanished\n");
+	  fold_loop_internal_call (g, boolean_false_node);
+	}
+      else if (loop_outer (ifcvt_loop) != loop_outer (orig_loop))
+	{
+	  if (dump_file)
+	    fprintf (dump_file, "If-converted loop in different outer loop\n");
 	  fold_loop_internal_call (g, boolean_false_node);
 	}
     }

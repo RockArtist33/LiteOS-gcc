@@ -39,6 +39,7 @@ with Freeze;         use Freeze;
 with Ghost;          use Ghost;
 with Lib;            use Lib;
 with Lib.Xref;       use Lib.Xref;
+with Mutably_Tagged; use Mutably_Tagged;
 with Namet;          use Namet;
 with Nlists;         use Nlists;
 with Nmake;          use Nmake;
@@ -597,10 +598,13 @@ package body Sem_Ch5 is
 
       --  Error of assigning to limited type. We do however allow this in
       --  certain cases where the front end generates the assignments.
+      --  Comes_From_Source test is needed to allow compiler-generated
+      --  streaming/put_image subprograms, which may ignore privacy.
 
       elsif Is_Limited_Type (T1)
         and then not Assignment_OK (Lhs)
         and then not Assignment_OK (Original_Node (Lhs))
+        and then (Comes_From_Source (N) or Is_Immutably_Limited_Type (T1))
       then
          --  CPP constructors can only be called in declarations
 
@@ -673,11 +677,17 @@ package body Sem_Ch5 is
 
       Set_Assignment_Type (Lhs, T1);
 
-      --  If the target of the assignment is an entity of a mutable type and
-      --  the expression is a conditional expression, its alternatives can be
-      --  of different subtypes of the nominal type of the LHS, so they must be
-      --  resolved with the base type, given that their subtype may differ from
-      --  that of the target mutable object.
+      --  When analyzing a mutably tagged class-wide equivalent type pretend we
+      --  are actually looking at the mutably tagged type itself for proper
+      --  analysis.
+
+      T1 := Get_Corresponding_Mutably_Tagged_Type_If_Present (T1);
+
+      --  If the target of the assignment is an entity of a mutably tagged type
+      --  and the expression is a conditional expression, its alternatives can
+      --  be of different subtypes of the nominal type of the LHS, so they must
+      --  be resolved with the base type, given that their subtype may differ
+      --  from that of the target mutable object.
 
       if Is_Entity_Name (Lhs)
         and then Is_Assignable (Entity (Lhs))
@@ -686,6 +696,19 @@ package body Sem_Ch5 is
         and then Nkind (Rhs) in N_If_Expression | N_Case_Expression
       then
          Resolve (Rhs, Base_Type (T1));
+
+      --  When the right hand side is a qualified expression and the left hand
+      --  side is mutably tagged we force the right hand side to be class-wide
+      --  so that they are compatible both for the purposes of checking
+      --  legality rules as well as assignment expansion.
+
+      elsif Is_Mutably_Tagged_Type (T1)
+        and then Nkind (Rhs) = N_Qualified_Expression
+      then
+         Make_Mutably_Tagged_Conversion (Rhs, T1);
+         Resolve (Rhs, T1);
+
+      --  Otherwise, resolve the right hand side normally
 
       else
          Resolve (Rhs, T1);
@@ -755,6 +778,7 @@ package body Sem_Ch5 is
         and then not Is_Class_Wide_Type (T2)
         and then not Is_Tag_Indeterminate (Rhs)
         and then not Is_Dynamically_Tagged (Rhs)
+        and then not Is_Mutably_Tagged_Type (T1)
       then
          Error_Msg_N ("dynamically tagged expression required!", Rhs);
       end if;
@@ -1473,7 +1497,7 @@ package body Sem_Ch5 is
       --  out non-discretes may resolve the ambiguity.
       --  But GNAT extensions allow casing on non-discretes.
 
-      elsif Core_Extensions_Allowed and then Is_Overloaded (Exp) then
+      elsif All_Extensions_Allowed and then Is_Overloaded (Exp) then
 
          --  It would be nice if we could generate all the right error
          --  messages by calling "Resolve (Exp, Any_Type);" in the
@@ -1491,12 +1515,21 @@ package body Sem_Ch5 is
       --  Check for a GNAT-extension "general" case statement (i.e., one where
       --  the type of the selecting expression is not discrete).
 
-      elsif Core_Extensions_Allowed
+      elsif All_Extensions_Allowed
          and then not Is_Discrete_Type (Etype (Exp))
       then
          Resolve (Exp, Etype (Exp));
          Exp_Type := Etype (Exp);
          Is_General_Case_Statement := True;
+         if not (Is_Record_Type (Exp_Type) or Is_Array_Type (Exp_Type)) then
+            Error_Msg_N
+              ("selecting expression of general case statement " &
+               "must be a record or an array",
+               Exp);
+
+            --  Avoid cascading errors
+            return;
+         end if;
       else
          Analyze_And_Resolve (Exp, Any_Discrete);
          Exp_Type := Etype (Exp);
@@ -1529,7 +1562,7 @@ package body Sem_Ch5 is
            ("(Ada 83) case expression cannot be of a generic type", Exp);
          return;
 
-      elsif not Core_Extensions_Allowed
+      elsif not All_Extensions_Allowed
         and then not Is_Discrete_Type (Exp_Type)
       then
          Error_Msg_N
@@ -2158,7 +2191,7 @@ package body Sem_Ch5 is
          return Etype (Ent);
       end Get_Cursor_Type;
 
-   --   Start of processing for Analyze_Iterator_Specification
+   --  Start of processing for Analyze_Iterator_Specification
 
    begin
       Enter_Name (Def_Id);
@@ -2488,6 +2521,13 @@ package body Sem_Ch5 is
                Error_Msg_N
                  ("iterable name cannot be a discriminant-dependent "
                   & "component of a mutable object", N);
+
+            elsif Depends_On_Mutably_Tagged_Ext_Comp
+                    (Original_Node (Iter_Name))
+            then
+               Error_Msg_N
+                 ("iterable name cannot depend on a mutably tagged component",
+                  N);
             end if;
 
             Check_Subtype_Definition (Component_Type (Typ));
@@ -2618,6 +2658,13 @@ package body Sem_Ch5 is
                         Error_Msg_N
                           ("container cannot be a discriminant-dependent "
                            & "component of a mutable object", N);
+
+                     elsif Depends_On_Mutably_Tagged_Ext_Comp
+                             (Orig_Iter_Name)
+                     then
+                        Error_Msg_N
+                          ("container cannot depend on a mutably tagged "
+                           & "component", N);
                      end if;
                   end if;
                end;
@@ -2704,6 +2751,11 @@ package body Sem_Ch5 is
                      Error_Msg_N
                        ("container cannot be a discriminant-dependent "
                         & "component of a mutable object", N);
+
+                  elsif Depends_On_Mutably_Tagged_Ext_Comp (Obj) then
+                     Error_Msg_N
+                       ("container cannot depend on a mutably tagged"
+                        & " component", N);
                   end if;
                end;
             end if;
@@ -4163,6 +4215,7 @@ package body Sem_Ch5 is
                if Current = Expression (Context) then
                   pragma Assert (Context = Current_Assignment);
                   Set_Etype (N, Etype (Name (Current_Assignment)));
+                  Analyze_Dimension (N);
                else
                   Report_Error;
                end if;

@@ -1148,8 +1148,29 @@ ao_ref_init_from_vn_reference (ao_ref *ref,
     {
       switch (op->opcode)
 	{
-	/* These may be in the reference ops, but we cannot do anything
-	   sensible with them here.  */
+	case CALL_EXPR:
+	  return false;
+
+	/* Record the base objects.  */
+	case MEM_REF:
+	  *op0_p = build2 (MEM_REF, op->type,
+			   NULL_TREE, op->op0);
+	  MR_DEPENDENCE_CLIQUE (*op0_p) = op->clique;
+	  MR_DEPENDENCE_BASE (*op0_p) = op->base;
+	  op0_p = &TREE_OPERAND (*op0_p, 0);
+	  break;
+
+	case TARGET_MEM_REF:
+	  *op0_p = build5 (TARGET_MEM_REF, op->type,
+			   NULL_TREE, op->op2, op->op0,
+			   op->op1, ops[i+1].op0);
+	  MR_DEPENDENCE_CLIQUE (*op0_p) = op->clique;
+	  MR_DEPENDENCE_BASE (*op0_p) = op->base;
+	  op0_p = &TREE_OPERAND (*op0_p, 0);
+	  ++i;
+	  break;
+
+	/* Unwrap some of the wrapped decls.  */
 	case ADDR_EXPR:
 	  /* Apart from ADDR_EXPR arguments to MEM_REF.  */
 	  if (base != NULL_TREE
@@ -1170,21 +1191,16 @@ ao_ref_init_from_vn_reference (ao_ref *ref,
 	      break;
 	    }
 	  /* Fallthru.  */
-	case CALL_EXPR:
-	  return false;
-
-	/* Record the base objects.  */
-	case MEM_REF:
-	  *op0_p = build2 (MEM_REF, op->type,
-			   NULL_TREE, op->op0);
-	  MR_DEPENDENCE_CLIQUE (*op0_p) = op->clique;
-	  MR_DEPENDENCE_BASE (*op0_p) = op->base;
-	  op0_p = &TREE_OPERAND (*op0_p, 0);
-	  break;
-
-	case VAR_DECL:
 	case PARM_DECL:
+	case CONST_DECL:
 	case RESULT_DECL:
+	  /* ???  We shouldn't see these, but un-canonicalize what
+	     copy_reference_ops_from_ref does when visiting MEM_REF.  */
+	case VAR_DECL:
+	  /* ???  And for this only have DECL_HARD_REGISTER.  */
+	case STRING_CST:
+	  /* This can show up in ARRAY_REF bases.  */
+	case INTEGER_CST:
 	case SSA_NAME:
 	  *op0_p = op->op0;
 	  op0_p = NULL;
@@ -1221,7 +1237,7 @@ ao_ref_init_from_vn_reference (ao_ref *ref,
 	  if (maybe_eq (op->off, -1))
 	    max_size = -1;
 	  else
-	    offset += op->off << LOG2_BITS_PER_UNIT;
+	    offset += op->off * BITS_PER_UNIT;
 	  break;
 
 	case REALPART_EXPR:
@@ -1234,13 +1250,12 @@ ao_ref_init_from_vn_reference (ao_ref *ref,
 	case VIEW_CONVERT_EXPR:
 	  break;
 
-	case STRING_CST:
-	case INTEGER_CST:
+	case POLY_INT_CST:
 	case COMPLEX_CST:
 	case VECTOR_CST:
 	case REAL_CST:
+	case FIXED_CST:
 	case CONSTRUCTOR:
-	case CONST_DECL:
 	  return false;
 
 	default:
@@ -5979,7 +5994,7 @@ visit_phi (gimple *phi, bool *inserted, bool backedges_varying_p)
   if (SSA_NAME_OCCURS_IN_ABNORMAL_PHI (PHI_RESULT (phi)))
     return set_ssa_val_to (PHI_RESULT (phi), PHI_RESULT (phi));
 
-  /* We track whether a PHI was CSEd to to avoid excessive iterations
+  /* We track whether a PHI was CSEd to avoid excessive iterations
      that would be necessary only because the PHI changed arguments
      but not value.  */
   if (!inserted)
@@ -6871,27 +6886,10 @@ eliminate_dom_walker::eliminate_stmt (basic_block b, gimple_stmt_iterator *gsi)
 
       /* If this now constitutes a copy duplicate points-to
 	 and range info appropriately.  This is especially
-	 important for inserted code.  See tree-ssa-copy.cc
-	 for similar code.  */
+	 important for inserted code.  */
       if (sprime
 	  && TREE_CODE (sprime) == SSA_NAME)
-	{
-	  basic_block sprime_b = gimple_bb (SSA_NAME_DEF_STMT (sprime));
-	  if (POINTER_TYPE_P (TREE_TYPE (lhs))
-	      && SSA_NAME_PTR_INFO (lhs)
-	      && ! SSA_NAME_PTR_INFO (sprime))
-	    {
-	      duplicate_ssa_name_ptr_info (sprime,
-					   SSA_NAME_PTR_INFO (lhs));
-	      if (b != sprime_b)
-		reset_flow_sensitive_info (sprime);
-	    }
-	  else if (INTEGRAL_TYPE_P (TREE_TYPE (lhs))
-		   && SSA_NAME_RANGE_INFO (lhs)
-		   && ! SSA_NAME_RANGE_INFO (sprime)
-		   && b == sprime_b)
-	    duplicate_ssa_name_range_info (sprime, lhs);
-	}
+	maybe_duplicate_ssa_info_at_copy (lhs, sprime);
 
       /* Inhibit the use of an inserted PHI on a loop header when
 	 the address of the memory reference is a simple induction

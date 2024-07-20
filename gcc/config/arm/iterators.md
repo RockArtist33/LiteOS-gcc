@@ -50,6 +50,9 @@
 ;; A list of the 32bit and 64bit integer modes
 (define_mode_iterator SIDI [SI DI])
 
+;; A list of the 64bit modes for thumb1.
+(define_mode_iterator DIDF [DI DF])
+
 ;; A list of atomic compare and swap success return modes
 (define_mode_iterator CCSI [(CC_Z "TARGET_32BIT") (SI "TARGET_THUMB1")])
 
@@ -868,6 +871,14 @@
 		 (mult "vmul")
 		 (plus "vadd")
 		 ])
+
+(define_int_attr mve_vmaxmin_safe_imp [
+		 (VMAXVQ_U "yes")
+		 (VMAXVQ_S "no")
+		 (VMAXAVQ_S "yes")
+		 (VMINVQ_U "no")
+		 (VMINVQ_S "no")
+		 (VMINAVQ_S "no")])
 
 (define_int_attr mve_cmp_op1 [
 		 (VCMPCSQ_M_U "cs")
@@ -2361,7 +2372,7 @@
 		       (VSUBQ_S "s") (VSUBQ_U "u") (VADDVAQ_S "s")
 		       (VADDVAQ_U "u") (VADDLVAQ_S "s") (VADDLVAQ_U "u")
 		       (VBICQ_N_S "s") (VBICQ_N_U "u") (VMLALDAVQ_U "u")
-		       (VMLALDAVQ_S "s") (VMLALDAVXQ_U "u") (VMLALDAVXQ_S "s")
+		       (VMLALDAVQ_S "s") (VMLALDAVXQ_S "s")
 		       (VMOVNBQ_U "u") (VMOVNBQ_S "s") (VMOVNTQ_U "u")
 		       (VMOVNTQ_S "s") (VORRQ_N_S "s") (VORRQ_N_U "u")
 		       (VQMOVNBQ_U "u") (VQMOVNBQ_S "s") (VQMOVNTQ_S "s")
@@ -2403,8 +2414,8 @@
 		       (VREV16Q_M_S "s") (VREV16Q_M_U "u")
 		       (VQRSHRNTQ_N_U "u") (VMOVNTQ_M_U "u") (VMOVLBQ_M_U "u")
 		       (VMLALDAVAQ_U "u") (VQSHRNBQ_N_U "u") (VSHRNBQ_N_U "u")
-		       (VRSHRNBQ_N_U "u") (VMLALDAVXQ_P_U "u")
-		       (VMVNQ_M_N_U "u") (VQSHRNTQ_N_U "u") (VMLALDAVAXQ_U "u")
+		       (VRSHRNBQ_N_U "u")
+		       (VMVNQ_M_N_U "u") (VQSHRNTQ_N_U "u")
 		       (VQMOVNTQ_M_U "u") (VSHRNTQ_N_U "u") (VCVTMQ_M_S "s")
 		       (VCVTMQ_M_U "u") (VCVTNQ_M_S "s") (VCVTNQ_M_U "u")
 		       (VCVTPQ_M_S "s") (VCVTPQ_M_U "u") (VADDLVAQ_P_S "s")
@@ -2678,6 +2689,17 @@
 (define_int_attr mrrc [(VUNSPEC_MRRC "mrrc") (VUNSPEC_MRRC2 "mrrc2")])
 (define_int_attr MRRC [(VUNSPEC_MRRC "MRRC") (VUNSPEC_MRRC2 "MRRC2")])
 
+(define_int_attr dlstp_elemsize [(DLSTP8 "8") (DLSTP16 "16") (DLSTP32 "32")
+				 (DLSTP64 "64")])
+
+(define_int_attr letp_num_lanes [(LETP8 "16") (LETP16 "8") (LETP32 "4")
+				 (LETP64 "2")])
+(define_int_attr letp_num_lanes_neg [(LETP8 "-16") (LETP16 "-8") (LETP32 "-4")
+				     (LETP64 "-2")])
+
+(define_int_attr letp_num_lanes_minus_1 [(LETP8 "15") (LETP16 "7") (LETP32 "3")
+					 (LETP64 "1")])
+
 (define_int_attr opsuffix [(UNSPEC_DOT_S "s8")
 			   (UNSPEC_DOT_U "u8")
 			   (UNSPEC_DOT_US "s8")
@@ -2753,7 +2775,6 @@
 (define_int_iterator VADDLVAQ [VADDLVAQ_S VADDLVAQ_U])
 (define_int_iterator VBICQ_N [VBICQ_N_S VBICQ_N_U])
 (define_int_iterator VMLALDAVQ [VMLALDAVQ_U VMLALDAVQ_S])
-(define_int_iterator VMLALDAVXQ [VMLALDAVXQ_U VMLALDAVXQ_S])
 (define_int_iterator VMOVNBQ [VMOVNBQ_U VMOVNBQ_S])
 (define_int_iterator VMOVNTQ [VMOVNTQ_S VMOVNTQ_U])
 (define_int_iterator VORRQ_N [VORRQ_N_U VORRQ_N_S])
@@ -2808,11 +2829,9 @@
 (define_int_iterator VQSHRNBQ_N [VQSHRNBQ_N_U VQSHRNBQ_N_S])
 (define_int_iterator VSHRNBQ_N [VSHRNBQ_N_U VSHRNBQ_N_S])
 (define_int_iterator VRSHRNBQ_N [VRSHRNBQ_N_S VRSHRNBQ_N_U])
-(define_int_iterator VMLALDAVXQ_P [VMLALDAVXQ_P_U VMLALDAVXQ_P_S])
 (define_int_iterator VQMOVNTQ_M [VQMOVNTQ_M_U VQMOVNTQ_M_S])
 (define_int_iterator VMVNQ_M_N [VMVNQ_M_N_U VMVNQ_M_N_S])
 (define_int_iterator VQSHRNTQ_N [VQSHRNTQ_N_U VQSHRNTQ_N_S])
-(define_int_iterator VMLALDAVAXQ [VMLALDAVAXQ_S VMLALDAVAXQ_U])
 (define_int_iterator VSHRNTQ_N [VSHRNTQ_N_S VSHRNTQ_N_U])
 (define_int_iterator VCVTMQ_M [VCVTMQ_M_S VCVTMQ_M_U])
 (define_int_iterator VCVTNQ_M [VCVTNQ_M_S VCVTNQ_M_U])
@@ -2921,6 +2940,10 @@
 (define_int_iterator VSHLCQ_M [VSHLCQ_M_S VSHLCQ_M_U])
 (define_int_iterator VQSHLUQ_M_N [VQSHLUQ_M_N_S])
 (define_int_iterator VQSHLUQ_N [VQSHLUQ_N_S])
+(define_int_iterator DLSTP [DLSTP8 DLSTP16 DLSTP32
+				   DLSTP64])
+(define_int_iterator LETP [LETP8 LETP16 LETP32
+			   LETP64])
 
 ;; Define iterators for VCMLA operations
 (define_int_iterator VCMLA_OP [UNSPEC_VCMLA

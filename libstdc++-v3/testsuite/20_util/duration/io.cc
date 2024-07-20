@@ -100,6 +100,12 @@ test_format()
   std::chrono::duration<float, std::milli> d{0.5};
   s = std::format("{}", d);
   VERIFY( s == "0.5ms" );
+
+  std::chrono::duration<unsigned, std::milli> u{500}; // PR libstdc++/115668
+  s = std::format("{}", u);
+  VERIFY( s == "500ms" );
+  s = std::format("{:%Q %q}", u);
+  VERIFY( s == "500 ms" );
 }
 
 void
@@ -200,6 +206,18 @@ test_parse()
   VERIFY( is >> parse("%S", us) );
   VERIFY( us == 976us );
   VERIFY( is.get() == '5' );
+
+  is.clear();
+  is.str("0.5");
+  std::chrono::duration<double> ds;
+  VERIFY( is >> parse("%S", ds) );
+  VERIFY( ds == 0.5s );
+
+  is.clear();
+  is.str("0.125");
+  std::chrono::duration<double, std::milli> dms;
+  VERIFY( is >> parse("%S", dms) );
+  VERIFY( dms == 0.125s );
 }
 
 int main()

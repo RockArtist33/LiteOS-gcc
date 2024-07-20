@@ -52,6 +52,8 @@
 
   ;; TLS
   UNSPEC_TLS
+  UNSPEC_TLS_DESC
+  UNSPEC_TLS_DESC_OFF64
 
   ;; Stack tie
   UNSPEC_TIE
@@ -126,6 +128,15 @@
    (T0_REGNUM			12)
    (T1_REGNUM			13)
    (S0_REGNUM			23)
+
+   (FCC0_REGNUM			64)
+   (FCC1_REGNUM			65)
+   (FCC2_REGNUM			66)
+   (FCC3_REGNUM			67)
+   (FCC4_REGNUM			68)
+   (FCC5_REGNUM			69)
+   (FCC6_REGNUM			70)
+   (FCC7_REGNUM			71)
 
    ;; Return path styles
    (NORMAL_RETURN		0)
@@ -389,9 +400,6 @@
 ;; 64-bit modes for which we provide move patterns.
 (define_mode_iterator MOVE64 [DI DF])
 
-;; 128-bit modes for which we provide move patterns on 64-bit targets.
-(define_mode_iterator MOVE128 [TI TF])
-
 ;; Iterator for sub-32-bit integer modes.
 (define_mode_iterator SHORT [QI HI])
 
@@ -409,12 +417,6 @@
 ;; floating-point register.
 (define_mode_iterator ANYFI [(SI "TARGET_HARD_FLOAT")
 			     (DI "TARGET_DOUBLE_FLOAT")])
-
-;; A mode for which moves involving FPRs may need to be split.
-(define_mode_iterator SPLITF
-  [(DF "!TARGET_64BIT && TARGET_DOUBLE_FLOAT")
-   (DI "!TARGET_64BIT && TARGET_DOUBLE_FLOAT")
-   (TF "TARGET_64BIT && TARGET_DOUBLE_FLOAT")])
 
 ;; A mode for anything with 32 bits or more, and able to be loaded with
 ;; the same addressing mode as ld.w.
@@ -517,7 +519,6 @@
 ;; These code iterators allow the signed and unsigned scc operations to use
 ;; the same template.
 (define_code_iterator any_gt [gt gtu])
-(define_code_iterator any_ge [ge geu])
 (define_code_iterator any_lt [lt ltu])
 (define_code_iterator any_le [le leu])
 
@@ -1532,10 +1533,27 @@
   [(set_attr "move_type" "pick_ins")
    (set_attr "mode" "<MODE>")])
 
+(define_insn_and_split "and<mode>3_align"
+  [(set (match_operand:GPR 0 "register_operand" "=r")
+	(and:GPR (match_operand:GPR 1 "register_operand" "r")
+		 (match_operand:GPR 2 "high_bitmask_operand" "Yy")))]
+  ""
+  "#"
+  ""
+  [(set (match_dup 0) (match_dup 1))
+   (set (zero_extract:GPR (match_dup 0) (match_dup 2) (const_int 0))
+	(const_int 0))]
+{
+  int len;
+
+  len = low_bitmask_len (<MODE>mode, ~INTVAL (operands[2]));
+  operands[2] = GEN_INT (len);
+})
+
 (define_insn_and_split "*bstrins_<mode>_for_mask"
-  [(set (match_operand:GPR 0 "register_operand")
-	(and:GPR (match_operand:GPR 1 "register_operand")
-		 (match_operand:GPR 2 "ins_zero_bitmask_operand")))]
+  [(set (match_operand:GPR 0 "register_operand" "=r")
+	(and:GPR (match_operand:GPR 1 "register_operand" "r")
+		 (match_operand:GPR 2 "ins_zero_bitmask_operand" "i")))]
   ""
   "#"
   ""
@@ -1553,11 +1571,11 @@
   })
 
 (define_insn_and_split "*bstrins_<mode>_for_ior_mask"
-  [(set (match_operand:GPR 0 "register_operand")
-	(ior:GPR (and:GPR (match_operand:GPR 1 "register_operand")
-                          (match_operand:GPR 2 "const_int_operand"))
-		 (and:GPR (match_operand:GPR 3 "register_operand")
-			  (match_operand:GPR 4 "const_int_operand"))))]
+  [(set (match_operand:GPR 0 "register_operand" "=r")
+	(ior:GPR (and:GPR (match_operand:GPR 1 "register_operand" "r")
+			  (match_operand:GPR 2 "const_int_operand" "i"))
+		 (and:GPR (match_operand:GPR 3 "register_operand" "r")
+			  (match_operand:GPR 4 "const_int_operand" "i"))))]
   "loongarch_pre_reload_split ()
    && loongarch_use_bstrins_for_ior_with_mask (<MODE>mode, operands)"
   "#"
@@ -2388,46 +2406,12 @@
   [(set (match_operand:DF 0 "nonimmediate_operand" "=r,r,m")
 	(match_operand:DF 1 "move_operand" "rG,m,rG"))]
   "(TARGET_SOFT_FLOAT || TARGET_SINGLE_FLOAT)
+   && TARGET_64BIT
    && (register_operand (operands[0], DFmode)
        || reg_or_0_operand (operands[1], DFmode))"
   { return loongarch_output_move (operands[0], operands[1]); }
   [(set_attr "move_type" "move,load,store")
    (set_attr "mode" "DF")])
-
-;; Emit a doubleword move in which exactly one of the operands is
-;; a floating-point register.  We can't just emit two normal moves
-;; because of the constraints imposed by the FPU register model;
-;; see loongarch_can_change_mode_class for details.  Instead, we keep
-;; the FPR whole and use special patterns to refer to each word of
-;; the other operand.
-
-(define_expand "move_doubleword_fpr<mode>"
-  [(set (match_operand:SPLITF 0)
-	(match_operand:SPLITF 1))]
-  ""
-{
-  if (FP_REG_RTX_P (operands[0]))
-    {
-      rtx low = loongarch_subword (operands[1], 0);
-      rtx high = loongarch_subword (operands[1], 1);
-      emit_insn (gen_load_low<mode> (operands[0], low));
-      if (!TARGET_64BIT)
-       emit_insn (gen_movgr2frh<mode> (operands[0], high, operands[0]));
-      else
-       emit_insn (gen_load_high<mode> (operands[0], high, operands[0]));
-    }
-  else
-    {
-      rtx low = loongarch_subword (operands[0], 0);
-      rtx high = loongarch_subword (operands[0], 1);
-      emit_insn (gen_store_word<mode> (low, operands[1], const0_rtx));
-      if (!TARGET_64BIT)
-       emit_insn (gen_movfrh2gr<mode> (high, operands[1]));
-      else
-       emit_insn (gen_store_word<mode> (high, operands[1], const1_rtx));
-    }
-  DONE;
-})
 
 ;; Clear one FCC register
 
@@ -2620,7 +2604,7 @@
 				(match_operand:P 2 "symbolic_operand")))]
 	UNSPEC_LOAD_FROM_GOT))]
   ""
-  "ld.<d>\t%0,%1,%L2"
+  "%Q2ld.<d>\t%0,%1,%L2"
   [(set_attr "type" "move")]
 )
 
@@ -2715,50 +2699,64 @@
   [(set_attr "type" "fcvt")
    (set_attr "mode" "<ANYF:MODE>")])
 
-;; Load the low word of operand 0 with operand 1.
-(define_insn "load_low<mode>"
-  [(set (match_operand:SPLITF 0 "register_operand" "=f,f")
-	(unspec:SPLITF [(match_operand:<HALFMODE> 1 "general_operand" "rJ,m")]
-		       UNSPEC_LOAD_LOW))]
-  "TARGET_HARD_FLOAT"
-{
-  operands[0] = loongarch_subword (operands[0], 0);
-  return loongarch_output_move (operands[0], operands[1]);
-}
-  [(set_attr "move_type" "mgtf,fpload")
-   (set_attr "mode" "<HALFMODE>")])
-
-;; Load the high word of operand 0 from operand 1, preserving the value
-;; in the low word.
-(define_insn "load_high<mode>"
-  [(set (match_operand:SPLITF 0 "register_operand" "=f,f")
-	(unspec:SPLITF [(match_operand:<HALFMODE> 1 "general_operand" "rJ,m")
-			(match_operand:SPLITF 2 "register_operand" "0,0")]
-		       UNSPEC_LOAD_HIGH))]
-  "TARGET_HARD_FLOAT"
-{
-  operands[0] = loongarch_subword (operands[0], 1);
-  return loongarch_output_move (operands[0], operands[1]);
-}
-  [(set_attr "move_type" "mgtf,fpload")
-   (set_attr "mode" "<HALFMODE>")])
-
-;; Store one word of operand 1 in operand 0.  Operand 2 is 1 to store the
-;; high word and 0 to store the low word.
-(define_insn "store_word<mode>"
-  [(set (match_operand:<HALFMODE> 0 "nonimmediate_operand" "=r,m")
-	(unspec:<HALFMODE> [(match_operand:SPLITF 1 "register_operand" "f,f")
-			    (match_operand 2 "const_int_operand")]
-			   UNSPEC_STORE_WORD))]
-  "TARGET_HARD_FLOAT"
-{
-  operands[1] = loongarch_subword (operands[1], INTVAL (operands[2]));
-  return loongarch_output_move (operands[0], operands[1]);
-}
-  [(set_attr "move_type" "mftg,fpstore")
-   (set_attr "mode" "<HALFMODE>")])
-
 ;; Thread-Local Storage
+
+(define_insn "@got_load_tls_desc<mode>"
+  [(set (reg:P 4)
+	(unspec:P
+	    [(match_operand:P 0 "symbolic_operand" "")]
+	    UNSPEC_TLS_DESC))
+    (clobber (reg:SI FCC0_REGNUM))
+    (clobber (reg:SI FCC1_REGNUM))
+    (clobber (reg:SI FCC2_REGNUM))
+    (clobber (reg:SI FCC3_REGNUM))
+    (clobber (reg:SI FCC4_REGNUM))
+    (clobber (reg:SI FCC5_REGNUM))
+    (clobber (reg:SI FCC6_REGNUM))
+    (clobber (reg:SI FCC7_REGNUM))
+    (clobber (reg:SI RETURN_ADDR_REGNUM))]
+  "TARGET_TLS_DESC"
+{
+  return TARGET_EXPLICIT_RELOCS
+    ? "pcalau12i\t$r4,%%desc_pc_hi20(%0)\n\t"
+      "addi.d\t$r4,$r4,%%desc_pc_lo12(%0)\n\t"
+      "ld.d\t$r1,$r4,%%desc_ld(%0)\n\t"
+      "jirl\t$r1,$r1,%%desc_call(%0)"
+    : "la.tls.desc\t$r4,%0";
+}
+  [(set_attr "got" "load")
+   (set_attr "mode" "<MODE>")
+   (set_attr "length" "16")])
+
+(define_insn "got_load_tls_desc_off64"
+  [(set (reg:DI 4)
+	(unspec:DI
+	    [(match_operand:DI 0 "symbolic_operand" "")]
+	    UNSPEC_TLS_DESC_OFF64))
+    (clobber (reg:SI FCC0_REGNUM))
+    (clobber (reg:SI FCC1_REGNUM))
+    (clobber (reg:SI FCC2_REGNUM))
+    (clobber (reg:SI FCC3_REGNUM))
+    (clobber (reg:SI FCC4_REGNUM))
+    (clobber (reg:SI FCC5_REGNUM))
+    (clobber (reg:SI FCC6_REGNUM))
+    (clobber (reg:SI FCC7_REGNUM))
+    (clobber (reg:SI RETURN_ADDR_REGNUM))
+    (clobber (match_operand:DI 1 "register_operand" "=&r"))]
+  "TARGET_TLS_DESC && TARGET_CMODEL_EXTREME"
+{
+  return TARGET_EXPLICIT_RELOCS
+    ? "pcalau12i\t$r4,%%desc_pc_hi20(%0)\n\t"
+      "addi.d\t%1,$r0,%%desc_pc_lo12(%0)\n\t"
+      "lu32i.d\t%1,%%desc64_pc_lo20(%0)\n\t"
+      "lu52i.d\t%1,%1,%%desc64_pc_hi12(%0)\n\t"
+      "add.d\t$r4,$r4,%1\n\t"
+      "ld.d\t$r1,$r4,%%desc_ld(%0)\n\t"
+      "jirl\t$r1,$r1,%%desc_call(%0)"
+    : "la.tls.desc\t$r4,%1,%0";
+}
+  [(set_attr "got" "load")
+   (set_attr "length" "28")])
 
 (define_insn "@load_tls<mode>"
   [(set (match_operand:P 0 "register_operand" "=r")
@@ -2791,28 +2789,6 @@
 	(match_test "TARGET_CMODEL_EXTREME")
 	(const_int 4)
 	(const_int 2)))])
-
-;; Move operand 1 to the high word of operand 0 using movgr2frh.w, preserving the
-;; value in the low word.
-(define_insn "movgr2frh<mode>"
-  [(set (match_operand:SPLITF 0 "register_operand" "=f")
-	(unspec:SPLITF [(match_operand:<HALFMODE> 1 "reg_or_0_operand" "rJ")
-			(match_operand:SPLITF 2 "register_operand" "0")]
-			UNSPEC_MOVGR2FRH))]
-  "TARGET_DOUBLE_FLOAT"
-  "movgr2frh.w\t%z1,%0"
-  [(set_attr "move_type" "mgtf")
-   (set_attr "mode" "<HALFMODE>")])
-
-;; Move high word of operand 1 to operand 0 using movfrh2gr.s.
-(define_insn "movfrh2gr<mode>"
-  [(set (match_operand:<HALFMODE> 0 "register_operand" "=r")
-	(unspec:<HALFMODE> [(match_operand:SPLITF 1 "register_operand" "f")]
-			    UNSPEC_MOVFRH2GR))]
-  "TARGET_DOUBLE_FLOAT"
-  "movfrh2gr.s\t%0,%1"
-  [(set_attr "move_type" "mftg")
-   (set_attr "mode" "<HALFMODE>")])
 
 
 ;; Expand in-line code to clear the instruction cache between operand[0] and
@@ -3352,15 +3328,6 @@
 		     (match_operand:X 2 "reg_or_0_operand" "rJ")))]
   ""
   "slt<u>\t%0,%z2,%1"
-  [(set_attr "type" "slt")
-   (set_attr "mode" "<X:MODE>")])
-
-(define_insn "*sge<u>_<X:mode><GPR:mode>"
-  [(set (match_operand:GPR 0 "register_operand" "=r")
-	(any_ge:GPR (match_operand:X 1 "register_operand" "r")
-		     (const_int 1)))]
-  ""
-  "slt<u>i\t%0,%.,%1"
   [(set_attr "type" "slt")
    (set_attr "mode" "<X:MODE>")])
 
@@ -4251,24 +4218,27 @@
 
 
 (define_mode_iterator QHSD [QI HI SI DI])
+(define_int_iterator CRC [UNSPEC_CRC UNSPEC_CRCC])
+(define_int_attr crc [(UNSPEC_CRC "crc") (UNSPEC_CRCC "crcc")])
 
-(define_insn "loongarch_crc_w_<size>_w"
+(define_insn "loongarch_<crc>_w_<size>_w"
   [(set (match_operand:SI 0 "register_operand" "=r")
 	(unspec:SI [(match_operand:QHSD 1 "register_operand" "r")
 		   (match_operand:SI 2 "register_operand" "r")]
-		     UNSPEC_CRC))]
+		     CRC))]
   ""
-  "crc.w.<size>.w\t%0,%1,%2"
+  "<crc>.w.<size>.w\t%0,%1,%2"
   [(set_attr "type" "unknown")
    (set_attr "mode" "<MODE>")])
 
-(define_insn "loongarch_crcc_w_<size>_w"
-  [(set (match_operand:SI 0 "register_operand" "=r")
-	(unspec:SI [(match_operand:QHSD 1 "register_operand" "r")
-		   (match_operand:SI 2 "register_operand" "r")]
-		     UNSPEC_CRCC))]
-  ""
-  "crcc.w.<size>.w\t%0,%1,%2"
+(define_insn "loongarch_<crc>_w_<size>_w_extended"
+  [(set (match_operand:DI 0 "register_operand" "=r")
+	(sign_extend:DI
+	  (unspec:SI [(match_operand:QHSD 1 "register_operand" "r")
+		      (match_operand:SI 2 "register_operand" "r")]
+		     CRC)))]
+  "TARGET_64BIT"
+  "<crc>.w.<size>.w\t%0,%1,%2"
   [(set_attr "type" "unknown")
    (set_attr "mode" "<MODE>")])
 

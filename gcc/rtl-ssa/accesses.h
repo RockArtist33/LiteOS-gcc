@@ -358,7 +358,7 @@ public:
   use_info *next_any_insn_use () const;
 
   // Return the next use by a debug instruction, or null if none.
-  // This is only valid if if is_in_debug_insn ().
+  // This is only valid if is_in_debug_insn ().
   use_info *next_debug_insn_use () const;
 
   // Return the previous use by a phi node in the list, or null if none.
@@ -937,7 +937,8 @@ public:
   void print (pretty_printer *pp) const;
 
 private:
-  clobber_group (clobber_info *clobber);
+  clobber_group (clobber_info *);
+  clobber_group (clobber_info *, clobber_info *, clobber_info *);
 
   // Set the values of first_clobber () and last_clobber ().
   void set_first_clobber (clobber_info *c) { m_clobber_or_set = c; }

@@ -219,14 +219,14 @@ streamer_read_real_value (class lto_input_block *ib, REAL_VALUE_TYPE *r)
 
 void
 streamer_read_value_range (class lto_input_block *ib, data_in *data_in,
-			   Value_Range &vr)
+			   value_range &vr)
 {
   // Read the common fields to all vranges.
   value_range_kind kind = streamer_read_enum (ib, value_range_kind, VR_LAST);
   gcc_checking_assert (kind != VR_UNDEFINED);
   tree type = stream_read_tree (ib, data_in);
 
-  // Initialize the Value_Range to the correct type.
+  // Initialize the value_range to the correct type.
   vr.set_type (type);
 
   if (is_a <irange> (vr))
@@ -266,6 +266,18 @@ streamer_read_value_range (class lto_input_block *ib, data_in *data_in,
 	  streamer_read_real_value (ib, &ub);
 	  r.set (type, lb, ub, nan);
 	}
+      return;
+    }
+  if (is_a <prange> (vr))
+    {
+      prange &r = as_a <prange> (vr);
+      wide_int lb = streamer_read_wide_int (ib);
+      wide_int ub = streamer_read_wide_int (ib);
+      r.set (type, lb, ub);
+      wide_int value = streamer_read_wide_int (ib);
+      wide_int mask = streamer_read_wide_int (ib);
+      irange_bitmask bm (value, mask);
+      r.update_bitmask (bm);
       return;
     }
   gcc_unreachable ();

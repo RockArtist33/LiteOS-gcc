@@ -1149,10 +1149,14 @@ vect_set_loop_condition_partial_vectors_avx512 (class loop *loop,
 	      /* ???  But when the shift amount isn't constant this requires
 		 a round-trip to GRPs.  We could apply the bias to either
 		 side of the compare instead.  */
-	      tree shift = gimple_build (&preheader_seq, MULT_EXPR,
+	      tree shift = gimple_build (&preheader_seq, MINUS_EXPR,
 					 TREE_TYPE (niters_skip), niters_skip,
 					 build_int_cst (TREE_TYPE (niters_skip),
-							rgc.max_nscalars_per_iter));
+							bias));
+	      shift = gimple_build (&preheader_seq, MULT_EXPR,
+				    TREE_TYPE (niters_skip), shift,
+				    build_int_cst (TREE_TYPE (niters_skip),
+						   rgc.max_nscalars_per_iter));
 	      init_ctrl = gimple_build (&preheader_seq, LSHIFT_EXPR,
 					TREE_TYPE (init_ctrl),
 					init_ctrl, shift);
@@ -1523,7 +1527,7 @@ slpeel_tree_duplicate_loop_to_edge_cfg (class loop *loop, edge loop_exit,
 
   exit_dest = exit->dest;
   was_imm_dom = (get_immediate_dominator (CDI_DOMINATORS,
-					  exit_dest) == loop->header ?
+					  exit_dest) == exit->src ?
 		 true : false);
 
   /* Also copy the pre-header, this avoids jumping through hoops to
@@ -2128,17 +2132,20 @@ vect_can_peel_nonlinear_iv_p (loop_vec_info loop_vinfo,
      For shift, when shift mount >= precision, there would be UD.
      For mult, don't known how to generate
      init_expr * pow (step, niters) for variable niters.
-     For neg, it should be ok, since niters of vectorized main loop
-     will always be multiple of 2.  */
-  if ((!LOOP_VINFO_NITERS_KNOWN_P (loop_vinfo)
-       || !LOOP_VINFO_VECT_FACTOR (loop_vinfo).is_constant ())
-      && induction_type != vect_step_op_neg)
+     For neg unknown niters are ok, since niters of vectorized main loop
+     will always be multiple of 2.
+     See also PR113163,  PR114196 and PR114485.  */
+  if (!LOOP_VINFO_VECT_FACTOR (loop_vinfo).is_constant ()
+      || LOOP_VINFO_USING_PARTIAL_VECTORS_P (loop_vinfo)
+      || (!LOOP_VINFO_NITERS_KNOWN_P (loop_vinfo)
+	  && induction_type != vect_step_op_neg))
     {
       if (dump_enabled_p ())
 	dump_printf_loc (MSG_MISSED_OPTIMIZATION, vect_location,
 			 "Peeling for epilogue is not supported"
-			 " for nonlinear induction except neg"
-			 " when iteration count is unknown.\n");
+			 " for this nonlinear induction"
+			 " when iteration count is unknown or"
+			 " when using partial vectorization.\n");
       return false;
     }
 
@@ -2175,25 +2182,6 @@ vect_can_peel_nonlinear_iv_p (loop_vec_info loop_vinfo,
 			 "Peeling for alignement is not supported"
 			 " for nonlinear induction when niters_skip"
 			 " is not constant.\n");
-      return false;
-    }
-
-  /* We can't support partial vectors and early breaks with an induction
-     type other than add or neg since we require the epilog and can't
-     perform the peeling.  The below condition mirrors that of
-     vect_gen_vector_loop_niters  where niters_vector_mult_vf_var then sets
-     step_vector to VF rather than 1.  This is what creates the nonlinear
-     IV.  PR113163.  */
-  if (LOOP_VINFO_EARLY_BREAKS (loop_vinfo)
-      && LOOP_VINFO_VECT_FACTOR (loop_vinfo).is_constant ()
-      && LOOP_VINFO_USING_PARTIAL_VECTORS_P (loop_vinfo)
-      && induction_type != vect_step_op_neg)
-    {
-      if (dump_enabled_p ())
-	dump_printf_loc (MSG_MISSED_OPTIMIZATION, vect_location,
-			 "Peeling for epilogue is not supported"
-			 " for nonlinear induction except neg"
-			 " when VF is known and early breaks.\n");
       return false;
     }
 
@@ -2861,25 +2849,25 @@ vect_gen_vector_loop_niters (loop_vec_info loop_vinfo, tree niters,
 	{
 	  if (niters_no_overflow)
 	    {
-	      value_range vr (type,
-			      wi::one (TYPE_PRECISION (type)),
-			      wi::rshift (wi::max_value (TYPE_PRECISION (type),
-							 TYPE_SIGN (type)),
-					  exact_log2 (const_vf),
-					  TYPE_SIGN (type)));
+	      int_range<1> vr (type,
+			       wi::one (TYPE_PRECISION (type)),
+			       wi::rshift (wi::max_value (TYPE_PRECISION (type),
+							  TYPE_SIGN (type)),
+					   exact_log2 (const_vf),
+					   TYPE_SIGN (type)));
 	      set_range_info (niters_vector, vr);
 	    }
 	  /* For VF == 1 the vector IV might also overflow so we cannot
 	     assert a minimum value of 1.  */
 	  else if (const_vf > 1)
 	    {
-	      value_range vr (type,
-			      wi::one (TYPE_PRECISION (type)),
-			      wi::rshift (wi::max_value (TYPE_PRECISION (type),
-							 TYPE_SIGN (type))
-					  - (const_vf - 1),
-					  exact_log2 (const_vf), TYPE_SIGN (type))
-			      + 1);
+	      int_range<1> vr (type,
+			       wi::one (TYPE_PRECISION (type)),
+			       wi::rshift (wi::max_value (TYPE_PRECISION (type),
+							  TYPE_SIGN (type))
+					   - (const_vf - 1),
+					   exact_log2 (const_vf), TYPE_SIGN (type))
+			       + 1);
 	      set_range_info (niters_vector, vr);
 	    }
 	}
@@ -3424,9 +3412,9 @@ vect_do_peeling (loop_vec_info loop_vinfo, tree niters, tree nitersm1,
 	 least VF, so set range information for newly generated var.  */
       if (new_var_p)
 	{
-	  value_range vr (type,
-			  wi::to_wide (build_int_cst (type, lowest_vf)),
-			  wi::to_wide (TYPE_MAX_VALUE (type)));
+	  int_range<1> vr (type,
+			   wi::to_wide (build_int_cst (type, lowest_vf)),
+			   wi::to_wide (TYPE_MAX_VALUE (type)));
 	  set_range_info (niters, vr);
 	}
 

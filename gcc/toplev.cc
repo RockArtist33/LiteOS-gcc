@@ -1029,6 +1029,8 @@ general_init (const char *argv0, bool init_signals)
 
   global_dc->m_source_printing.enabled
     = global_options_init.x_flag_diagnostics_show_caret;
+  global_dc->m_source_printing.show_event_links_p
+    = global_options_init.x_flag_diagnostics_show_event_links;
   global_dc->m_source_printing.show_labels_p
     = global_options_init.x_flag_diagnostics_show_labels;
   global_dc->m_source_printing.show_line_numbers_p
@@ -1046,6 +1048,8 @@ general_init (const char *argv0, bool init_signals)
     = global_options_init.x_diagnostics_minimum_margin_width;
   global_dc->m_show_column
     = global_options_init.x_flag_show_column;
+  global_dc->set_show_highlight_colors
+    (global_options_init.x_flag_diagnostics_show_highlight_colors);
   global_dc->m_internal_error = internal_error_function;
   const unsigned lang_mask = lang_hooks.option_lang_mask ();
   global_dc->set_option_hooks (option_enabled,
@@ -1437,6 +1441,10 @@ process_options ()
 #ifdef DWARF2_LINENO_DEBUGGING_INFO
   else if (write_symbols == DWARF2_DEBUG)
     debug_hooks = &dwarf2_lineno_debug_hooks;
+#endif
+#ifdef CODEVIEW_DEBUGGING_INFO
+  else if (codeview_debuginfo_p ())
+    debug_hooks = &dwarf2_debug_hooks;
 #endif
   else
     {

@@ -20,12 +20,14 @@ along with GCC; see the file COPYING3.  If not see
 
 #include "config.h"
 #define INCLUDE_MEMORY
+#define INCLUDE_VECTOR
 #include "system.h"
 #include "coretypes.h"
 #include "tree.h"
 #include "function.h"
 #include "basic-block.h"
 #include "gimple.h"
+#include "diagnostic-core.h"
 #include "diagnostic.h"
 #include "tree-diagnostic.h"
 #include "analyzer/analyzer.h"
@@ -83,7 +85,7 @@ record_layout::dump () const
 {
   pretty_printer pp;
   pp_format_decoder (&pp) = default_tree_printer;
-  pp.buffer->stream = stderr;
+  pp.set_output_stream (stderr);
   dump_to_pp (&pp);
   pp_flush (&pp);
 }

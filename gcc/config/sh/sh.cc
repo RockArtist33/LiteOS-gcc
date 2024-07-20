@@ -328,6 +328,7 @@ static unsigned int sh_hard_regno_nregs (unsigned int, machine_mode);
 static bool sh_hard_regno_mode_ok (unsigned int, machine_mode);
 static bool sh_modes_tieable_p (machine_mode, machine_mode);
 static bool sh_can_change_mode_class (machine_mode, machine_mode, reg_class_t);
+static machine_mode sh_c_mode_for_floating_type (enum tree_index);
 
 TARGET_GNU_ATTRIBUTES (sh_attribute_table,
 {
@@ -663,6 +664,9 @@ TARGET_GNU_ATTRIBUTES (sh_attribute_table,
 
 #undef  TARGET_HAVE_SPECULATION_SAFE_VALUE
 #define TARGET_HAVE_SPECULATION_SAFE_VALUE speculation_safe_value_not_needed
+
+#undef TARGET_C_MODE_FOR_FLOATING_TYPE
+#define TARGET_C_MODE_FOR_FLOATING_TYPE sh_c_mode_for_floating_type
 
 struct gcc_target targetm = TARGET_INITIALIZER;
 
@@ -10674,6 +10678,20 @@ sh_can_change_mode_class (machine_mode from, machine_mode to,
   return true;
 }
 
+/* Implement TARGET_C_MODE_FOR_FLOATING_TYPE.  Return SFmode or DFmode
+   for TI_DOUBLE_TYPE which is for double type, go with the default one
+   for the others.  */
+
+static machine_mode
+sh_c_mode_for_floating_type (enum tree_index ti)
+{
+  /* Since the SH2e has only `float' support, it is desirable to make all
+     floating point types equivalent to `float'.  */
+  if (ti == TI_DOUBLE_TYPE)
+    return TARGET_FPU_SINGLE_ONLY ? SFmode : DFmode;
+  return default_mode_for_floating_type (ti);
+}
+
 /* Return true if registers in machine mode MODE will likely be
    allocated to registers in small register classes.  */
 bool
@@ -11767,7 +11785,8 @@ sh_insn_operands_modified_between_p (rtx_insn* operands_insn,
 bool
 sh_is_nott_insn (const rtx_insn* i)
 {
-  return i != NULL && GET_CODE (PATTERN (i)) == SET
+  return i != NULL_RTX && PATTERN (i) != NULL_RTX
+	 && GET_CODE (PATTERN (i)) == SET
 	 && t_reg_operand (XEXP (PATTERN (i), 0), VOIDmode)
 	 && negt_reg_operand (XEXP (PATTERN (i), 1), VOIDmode);
 }

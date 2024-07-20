@@ -192,13 +192,12 @@ bpf_option_override (void)
   init_machine_status = bpf_init_machine_status;
 
   /* BPF CO-RE support requires BTF debug info generation.  */
-  if (TARGET_BPF_CORE && !btf_debuginfo_p ())
+  if (TARGET_BPF_CORE
+      && (!btf_debuginfo_p () || (debug_info_level < DINFO_LEVEL_NORMAL)))
     error ("BPF CO-RE requires BTF debugging information, use %<-gbtf%>");
 
-  /* To support the portability needs of BPF CO-RE approach, BTF debug
-     information includes the BPF CO-RE relocations.  */
-  if (TARGET_BPF_CORE)
-    write_symbols |= BTF_WITH_CORE_DEBUG;
+  /* BPF applications always generate .BTF.ext.  */
+  write_symbols |= BTF_WITH_CORE_DEBUG;
 
   /* Unlike much of the other BTF debug information, the information necessary
      for CO-RE relocations is added to the CTF container by the BPF backend.
@@ -217,11 +216,15 @@ bpf_option_override (void)
 
   /* -gbtf implies -mcore when using the BPF backend, unless -mno-co-re
      is specified.  */
-  if (btf_debuginfo_p () && !(target_flags_explicit & MASK_BPF_CORE))
-    {
-      target_flags |= MASK_BPF_CORE;
-      write_symbols |= BTF_WITH_CORE_DEBUG;
-    }
+  if (btf_debuginfo_p ()
+      && (debug_info_level >= DINFO_LEVEL_NORMAL)
+      && !(target_flags_explicit & MASK_BPF_CORE))
+    target_flags |= MASK_BPF_CORE;
+
+  /* -gbtf implies -gprune-btf for BPF target.  */
+  if (btf_debuginfo_p ())
+    SET_OPTION_IF_UNSET (&global_options, &global_options_set,
+			 debug_prune_btf, true);
 
   /* Determine available features from ISA setting (-mcpu=).  */
   if (bpf_has_jmpext == -1)
@@ -267,7 +270,7 @@ bpf_option_override (void)
 static void
 bpf_asm_init_sections (void)
 {
-  if (TARGET_BPF_CORE)
+  if (btf_debuginfo_p () && btf_with_core_debuginfo_p ())
     btf_ext_init ();
 }
 
@@ -279,29 +282,15 @@ bpf_asm_init_sections (void)
 static void
 bpf_file_end (void)
 {
-  if (TARGET_BPF_CORE)
-    btf_ext_output ();
+  if (btf_debuginfo_p () && btf_with_core_debuginfo_p ())
+    {
+      btf_ext_output ();
+      btf_finalize ();
+    }
 }
 
 #undef TARGET_ASM_FILE_END
 #define TARGET_ASM_FILE_END bpf_file_end
-
-/* Define target-specific CPP macros.  This function in used in the
-   definition of TARGET_CPU_CPP_BUILTINS in bpf.h */
-
-#define builtin_define(TXT) cpp_define (pfile, TXT)
-
-void
-bpf_target_macros (cpp_reader *pfile)
-{
-  builtin_define ("__BPF__");
-  builtin_define ("__bpf__");
-
-  if (TARGET_BIG_ENDIAN)
-    builtin_define ("__BPF_BIG_ENDIAN__");
-  else
-    builtin_define ("__BPF_LITTLE_ENDIAN__");
-}
 
 /* Return an RTX representing the place where a function returns or
    receives a value of data type RET_TYPE, a tree node representing a
@@ -386,6 +375,18 @@ bpf_compute_frame_layout (void)
 
 #undef TARGET_COMPUTE_FRAME_LAYOUT
 #define TARGET_COMPUTE_FRAME_LAYOUT bpf_compute_frame_layout
+
+/* Defined to initialize data for func_info region in .BTF.ext section.  */
+
+static void
+bpf_function_prologue (FILE *f ATTRIBUTE_UNUSED)
+{
+  if (btf_debuginfo_p ())
+    btf_add_func_info_for (cfun->decl, current_function_func_begin_label);
+}
+
+#undef TARGET_ASM_FUNCTION_PROLOGUE
+#define TARGET_ASM_FUNCTION_PROLOGUE bpf_function_prologue
 
 /* Expand to the instructions in a function prologue.  This function
    is called when expanding the 'prologue' pattern in bpf.md.  */
@@ -574,6 +575,16 @@ bpf_legitimate_address_p (machine_mode mode,
 	if (bpf_address_base_p (x0, strict) && GET_CODE (x1) == CONST_INT)
 	  return IN_RANGE (INTVAL (x1), -1 - 0x7fff, 0x7fff);
 
+	/* Check if any of the PLUS operation operands is a CORE unspec, and at
+	   least the local value for the offset fits in the 16 bits available
+	   in the encoding.  */
+	if (bpf_address_base_p (x1, strict)
+	    && GET_CODE (x0) == UNSPEC && XINT (x0, 1) == UNSPEC_CORE_RELOC)
+	      return IN_RANGE (INTVAL (XVECEXP (x0, 0, 0)), -1 - 0x7fff, 0x7fff);
+	if (bpf_address_base_p (x0, strict)
+	    && GET_CODE (x1) == UNSPEC && XINT (x1, 1) == UNSPEC_CORE_RELOC)
+	      return IN_RANGE (INTVAL (XVECEXP (x1, 0, 0)), -1 - 0x7fff, 0x7fff);
+
 	break;
       }
     default:
@@ -604,6 +615,21 @@ bpf_rtx_costs (rtx x ATTRIBUTE_UNUSED,
 
 #undef TARGET_RTX_COSTS
 #define TARGET_RTX_COSTS bpf_rtx_costs
+
+static int
+bpf_insn_cost (rtx_insn *insn, bool speed ATTRIBUTE_UNUSED)
+{
+  rtx pat = PATTERN (insn);
+  if(GET_CODE (pat) == SET
+     && GET_CODE (XEXP (pat, 1)) == UNSPEC
+     && XINT (XEXP (pat, 1), 1) == UNSPEC_CORE_RELOC)
+    return COSTS_N_INSNS (100);
+
+  return COSTS_N_INSNS (1);
+}
+
+#undef TARGET_INSN_COST
+#define TARGET_INSN_COST bpf_insn_cost
 
 /* Return true if an argument at the position indicated by CUM should
    be passed by reference.  If the hook returns true, a copy of that
@@ -761,6 +787,13 @@ bpf_output_call (rtx target)
   return "";
 }
 
+const char *
+bpf_output_move (rtx *operands, const char *templ)
+{
+  bpf_output_core_reloc (operands, 2);
+  return templ;
+}
+
 /* Print register name according to assembly dialect.  In normal
    syntax registers are printed like %rN where N is the register
    number.
@@ -797,6 +830,11 @@ bpf_print_register (FILE *file, rtx op, int code)
     }
 }
 
+/* Variable defined to implement 'M' operand modifier for the special cases
+   where the parentheses should not be printed surrounding a memory address
+   operand. */
+static bool no_parentheses_mem_operand;
+
 /* Print an instruction operand.  This function is called in the macro
    PRINT_OPERAND defined in bpf.h */
 
@@ -809,6 +847,7 @@ bpf_print_operand (FILE *file, rtx op, int code)
       bpf_print_register (file, op, code);
       break;
     case MEM:
+      no_parentheses_mem_operand = (code == 'M');
       output_address (GET_MODE (op), XEXP (op, 0));
       break;
     case CONST_DOUBLE:
@@ -842,10 +881,19 @@ bpf_print_operand (FILE *file, rtx op, int code)
 	    gcc_unreachable ();
 	}
       break;
+    case UNSPEC:
+      if (XINT (op, 1) == UNSPEC_CORE_RELOC)
+	bpf_print_operand (file, XVECEXP (op, 0, 0), code);
+      else
+	gcc_unreachable ();
+      break;
     default:
       output_addr_const (file, op);
     }
 }
+
+#define PAREN_OPEN  (asm_dialect == ASM_NORMAL ? "[" : no_parentheses_mem_operand ? "" : "(")
+#define PAREN_CLOSE (asm_dialect == ASM_NORMAL ? "]" : no_parentheses_mem_operand ? "" : ")")
 
 /* Print an operand which is an address.  This function should handle
    any legit address, as accepted by bpf_legitimate_address_p, and
@@ -860,25 +908,33 @@ bpf_print_operand_address (FILE *file, rtx addr)
   switch (GET_CODE (addr))
     {
     case REG:
-      if (asm_dialect == ASM_NORMAL)
-	fprintf (file, "[");
+      fprintf (file, "%s", PAREN_OPEN);
       bpf_print_register (file, addr, 0);
-      fprintf (file, asm_dialect == ASM_NORMAL ? "+0]" : "+0");
+      fprintf (file, "+0%s", PAREN_CLOSE);
       break;
     case PLUS:
       {
 	rtx op0 = XEXP (addr, 0);
 	rtx op1 = XEXP (addr, 1);
 
-	if (GET_CODE (op0) == REG && GET_CODE (op1) == CONST_INT)
+	if (GET_CODE (op1) == REG) {
+	  op0 = op1;
+	  op1 = XEXP (addr, 0);
+	}
+
+	if (GET_CODE (op0) == REG
+	    && (GET_CODE (op1) == CONST_INT
+		|| (GET_CODE (op1) == UNSPEC
+		    && XINT (op1, 1) == UNSPEC_CORE_RELOC)))
 	  {
-	    if (asm_dialect == ASM_NORMAL)
-	      fprintf (file, "[");
+	    fprintf (file, "%s", PAREN_OPEN);
 	    bpf_print_register (file, op0, 0);
 	    fprintf (file, "+");
-	    output_addr_const (file, op1);
-	    if (asm_dialect == ASM_NORMAL)
-	      fprintf (file, "]");
+	    if (GET_CODE (op1) == UNSPEC)
+	      output_addr_const (file, XVECEXP (op1, 0, 0));
+	    else
+	      output_addr_const (file, op1);
+	    fprintf (file, "%s", PAREN_CLOSE);
 	  }
 	else
 	  fatal_insn ("invalid address in operand", addr);
@@ -895,6 +951,9 @@ bpf_print_operand_address (FILE *file, rtx addr)
       break;
     }
 }
+
+#undef PAREN_OPEN
+#undef PAREN_CLOSE
 
 /* Add a BPF builtin function with NAME, CODE and TYPE.  Return
    the function decl or NULL_TREE if the builtin was not added.  */
@@ -952,6 +1011,7 @@ bpf_init_builtins (void)
 	       build_function_type_list (integer_type_node,integer_type_node,
 					 0));
   DECL_PURE_P (bpf_builtins[BPF_BUILTIN_CORE_RELOC]) = 1;
+  TREE_NOTHROW (bpf_builtins[BPF_BUILTIN_CORE_RELOC]) = 1;
 
   bpf_init_core_builtins ();
 }
@@ -1234,9 +1294,9 @@ bool
 bpf_expand_cpymem (rtx *operands, bool is_move)
 {
   /* Size must be constant for this expansion to work.  */
+  const char *name = is_move ? "memmove" : "memcpy";
   if (!CONST_INT_P (operands[2]))
     {
-      const char *name = is_move ? "memmove" : "memcpy";
       if (flag_building_libgcc)
 	warning (0, "could not inline call to %<__builtin_%s%>: "
 		 "size must be constant", name);
@@ -1263,6 +1323,18 @@ bpf_expand_cpymem (rtx *operands, bool is_move)
     case 8: mode = DImode; break;
     default:
       gcc_unreachable ();
+    }
+
+  /* For sizes above threshold, always use a libcall.  */
+  if (size_bytes > (unsigned HOST_WIDE_INT) bpf_inline_memops_threshold)
+    {
+      if (flag_building_libgcc)
+	warning (0, "could not inline call to %<__builtin_%s%>: "
+		 "too many bytes, use %<-minline-memops-threshold%>", name);
+      else
+	error ("could not inline call to %<__builtin_%s%>: "
+	       "too many bytes, use %<-minline-memops-threshold%>", name);
+      return false;
     }
 
   unsigned iters = size_bytes >> ceil_log2 (align);
@@ -1295,6 +1367,84 @@ bpf_expand_cpymem (rtx *operands, bool is_move)
 
   if (is_move)
     emit_label (done_label);
+
+  return true;
+}
+
+/* Expand setmem, as from __builtin_memset.
+   OPERANDS are the same as the setmem pattern.
+   Return true if the expansion was successful, false otherwise.  */
+
+bool
+bpf_expand_setmem (rtx *operands)
+{
+  /* Size must be constant for this expansion to work.  */
+  if (!CONST_INT_P (operands[1]))
+    {
+      if (flag_building_libgcc)
+	warning (0, "could not inline call to %<__builtin_memset%>: "
+		 "size must be constant");
+      else
+	error ("could not inline call to %<__builtin_memset%>: "
+	       "size must be constant");
+      return false;
+    }
+
+  /* Alignment is a CONST_INT.  */
+  gcc_assert (CONST_INT_P (operands[3]));
+
+  rtx dst = operands[0];
+  rtx size = operands[1];
+  rtx val = operands[2];
+  unsigned HOST_WIDE_INT size_bytes = UINTVAL (size);
+  unsigned align = UINTVAL (operands[3]);
+  enum machine_mode mode;
+  switch (align)
+    {
+    case 1: mode = QImode; break;
+    case 2: mode = HImode; break;
+    case 4: mode = SImode; break;
+    case 8: mode = DImode; break;
+    default:
+      gcc_unreachable ();
+    }
+
+  /* For sizes above threshold, always use a libcall.  */
+  if (size_bytes > (unsigned HOST_WIDE_INT) bpf_inline_memops_threshold)
+    {
+      if (flag_building_libgcc)
+	warning (0, "could not inline call to %<__builtin_memset%>: "
+		 "too many bytes, use %<-minline-memops-threshold%>");
+      else
+	error ("could not inline call to %<__builtin_memset%>: "
+	       "too many bytes, use %<-minline-memops-threshold%>");
+      return false;
+    }
+
+  unsigned iters = size_bytes >> ceil_log2 (align);
+  unsigned remainder = size_bytes & (align - 1);
+  unsigned inc = GET_MODE_SIZE (mode);
+  unsigned offset = 0;
+
+  for (unsigned int i = 0; i < iters; i++)
+    {
+      emit_move_insn (adjust_address (dst, mode, offset), val);
+      offset += inc;
+    }
+  if (remainder & 4)
+    {
+      emit_move_insn (adjust_address (dst, SImode, offset), val);
+      offset += 4;
+      remainder -= 4;
+    }
+  if (remainder & 2)
+    {
+      emit_move_insn (adjust_address (dst, HImode, offset), val);
+      offset += 2;
+      remainder -= 2;
+    }
+  if (remainder & 1)
+    emit_move_insn (adjust_address (dst, QImode, offset), val);
 
   return true;
 }
